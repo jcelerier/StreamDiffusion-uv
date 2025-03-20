@@ -4,12 +4,15 @@
 
 Adaptations for streamdiffusion work with Tensorrt 10 and the uv package manager.
 
-- uv init --python 3.10
-- uv sync
-- uv run main.py (test example for generating 1000 images and getting FPS)
+```bash
+uv init --python 3.10
+uv sync
+uv run main.py # test example for generating 1000 images and getting FPS
+```
 
 ### example output
 
+```
 Performance Statistics:
 Total images generated: 1000
 Average time per image: 0.0152 seconds
@@ -17,9 +20,11 @@ Minimum time per image: 0.0150 seconds
 Maximum time per image: 0.0155 seconds
 Standard deviation: 0.0001 seconds
 Frames per second (FPS): 65.70
+```
 
 ## system specs
 
+```
 NVIDIA GeForce RTX 4090
 NVIDIA-SMI 560.35.03
 Driver Version: 560.35.03
@@ -36,6 +41,7 @@ Release:        24.04
 Codename:       noble
 
 Python=3.10
+```
 
 [English](./README.md) | [日本語](./README-ja.md) | [한국어](./README-ko.md)
 
