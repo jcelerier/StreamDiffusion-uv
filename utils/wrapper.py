@@ -484,7 +484,7 @@ class StreamDiffusionWrapper:
             use_denoising_batch=self.use_denoising_batch,
             cfg_type=cfg_type,
         )
-        if not self.sd_turbo:
+        if True: # not self.sd_turbo
             if CM_lora_type == "lcm":
                 print("-----------------Using lcm-----------------")
                 if lcm_lora_id is not None:
@@ -702,9 +702,68 @@ class StreamDiffusionWrapper:
                 stream = accelerate_with_stable_fast(stream)
                 print("StableFast acceleration enabled.")
         except Exception as e:
-            print(e)
+            # print(e)
             # traceback.print_exc()
             print("Acceleration has failed. Falling back to normal mode.")
+            
+            # Add more detailed error logging
+            error_msg = str(e)
+            if len(error_msg) > 200:
+                clipped_msg = f"{error_msg[:100]}...{error_msg[-100:]}"
+                print(f"Error details (clipped): {clipped_msg}")
+            else:
+                print(f"Error details: {error_msg}")
+            
+            # Print the error type
+            print(f"Exception type: {type(e).__name__}")
+            
+            # Add tensor gradient information if relevant
+            if "requires grad" in error_msg.lower() or "gradient" in error_msg.lower():
+                print("Tensor gradient error detected. Checking model components for requires_grad=True...")
+                try:
+                    # Check UNet parameters
+                    if hasattr(stream, 'unet'):
+                        requires_grad_params = []
+                        for name, param in stream.unet.named_parameters():
+                            if param.requires_grad:
+                                requires_grad_params.append(name)
+                        if requires_grad_params:
+                            print(f"UNet has {len(requires_grad_params)} parameters with requires_grad=True")
+                            print(f"First few: {requires_grad_params[:5]}")
+                    
+                    # Check VAE parameters
+                    if hasattr(stream, 'vae'):
+                        requires_grad_params = []
+                        for name, param in stream.vae.named_parameters():
+                            if param.requires_grad:
+                                requires_grad_params.append(name)
+                        if requires_grad_params:
+                            print(f"VAE has {len(requires_grad_params)} parameters with requires_grad=True")
+                            print(f"First few: {requires_grad_params[:5]}")
+                            
+                except Exception as check_error:
+                    print(f"Error while checking model parameters: {check_error}")
+            
+            # Log stack trace to file for debugging
+            from datetime import datetime
+            with open("acceleration_error.log", "a") as f:
+                f.write(f"\n--- Acceleration Error: {datetime.now()} ---\n")
+                f.write(f"Exception type: {type(e).__name__}\n")
+                f.write(f"Error message: {error_msg}\n")
+                f.write("\n--- Stack Trace ---\n")
+                traceback.print_exc(file=f)
+                if "requires grad" in error_msg.lower() or "gradient" in error_msg.lower():
+                    f.write("\n--- Tensor Information ---\n")
+                    try:
+                        if hasattr(e, '__notes__'):
+                            f.write(f"Error notes: {e.__notes__}\n")
+                        if hasattr(e, 'tensors'):
+                            for i, tensor in enumerate(e.tensors):
+                                f.write(f"Tensor {i} shape: {tensor.shape}, dtype: {tensor.dtype}, requires_grad: {tensor.requires_grad}\n")
+                                f.write(f"Tensor {i} first few values: {tensor.flatten()[:10]}\n")
+                    except:
+                        f.write("Could not extract detailed tensor information\n")
+                f.write("----------------------------------------\n")
 
         if seed < 0:  # Random seed
             seed = np.random.randint(0, 1000000)

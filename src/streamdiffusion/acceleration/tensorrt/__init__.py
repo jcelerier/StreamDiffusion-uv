@@ -1,19 +1,28 @@
 import gc
 import os
-
 import torch
+import logging
 from diffusers import AutoencoderKL, UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import (
     retrieve_latents,
 )
 from polygraphy import cuda
-
 from ...pipeline import StreamDiffusion
 from ...unet_with_control import UNet2DConditionControlNetModel
 from .builder import EngineBuilder, create_onnx_path
 from .engine import AutoencoderKLEngine, UNet2DConditionModelEngine
 from .models import VAE, BaseModel, UNet, VAEEncoder
 
+# Configure logging for TensorRT conversion
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('acceleration_error.log', mode='a'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger('tensorrt_conversion')
 
 class TorchVAEEncoder(torch.nn.Module):
     def __init__(self, vae: AutoencoderKL):
@@ -92,17 +101,66 @@ def compile_control_unet(
     opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
+    logger.info("Starting compile_control_unet with ControlNet integration")
+    
+    # Check for gradients before any modification
+    logger.info("Checking for gradients in UNet components before conversion")
+    
+    # Check UNet parameters for requires_grad=True
+    requires_grad_params = []
+    for name, param in unet.named_parameters():
+        if param.requires_grad:
+            requires_grad_params.append(name)
+    
+    if requires_grad_params:
+        logger.warning(f"Found {len(requires_grad_params)} parameters with requires_grad=True")
+        logger.info(f"First few parameters with gradients: {requires_grad_params[:5]}")
+        
+        # Disable gradients for all parameters
+        logger.info("Disabling gradients for all parameters")
+        for param in unet.parameters():
+            param.requires_grad = False
+    
+    logger.info("Moving models to CUDA and converting to float16")
     unet = unet.to(torch.device("cuda"), dtype=torch.float16)
     unet.unet = unet.unet.to(torch.device("cuda"), dtype=torch.float16)
+    
+    logger.info(f"Processing {len(unet.controlnets)} ControlNet models")
+    controlnet_grad_counts = []
+    
+    for i, controlnet in enumerate(unet.controlnets):
+        # Check controlnet parameters for requires_grad=True
+        controlnet_requires_grad = 0
+        for name, param in controlnet.named_parameters():
+            if param.requires_grad:
+                controlnet_requires_grad += 1
+                param.requires_grad = False  # Disable gradients
+        
+        controlnet_grad_counts.append(controlnet_requires_grad)
+        controlnet = controlnet.to(torch.device("cuda"), dtype=torch.float16)
+    
+    logger.info(f"ControlNet gradient counts: {controlnet_grad_counts}")
+    
     unet.controlnets = [controlnet.to(torch.device("cuda"), dtype=torch.float16) for controlnet in unet.controlnets]
-    builder = EngineBuilder(model_data, unet, device=torch.device("cuda"))
-    builder.build(
-        onnx_path,
-        onnx_opt_path,
-        engine_path,
-        opt_batch_size=opt_batch_size,
-        **engine_build_options,
-    )
+    
+    # Final check after conversion
+    with torch.no_grad():
+        logger.info("Building ControlNet UNet TensorRT engine")
+        builder = EngineBuilder(model_data, unet, device=torch.device("cuda"))
+        
+        try:
+            builder.build(
+                onnx_path,
+                onnx_opt_path,
+                engine_path,
+                opt_batch_size=opt_batch_size,
+                **engine_build_options,
+            )
+            logger.info("Successfully built ControlNet UNet TensorRT engine")
+        except Exception as e:
+            logger.error(f"Error building ControlNet UNet TensorRT engine: {str(e)}")
+            logger.exception("Stack trace:")
+            raise
 
 
 def accelerate_with_tensorrt(

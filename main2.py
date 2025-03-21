@@ -13,10 +13,14 @@ from utils.wrapper import StreamDiffusionWrapper
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# thibaud/controlnet-sd21-canny-diffusers
+
+# lllyasviel/control_v11p_sd15_canny
+
 def main(
     input: str = os.path.join(CURRENT_DIR, "..", "..", "images", "inputs", "input.png"),
     output: str = os.path.join(CURRENT_DIR, "..", "..", "images", "outputs", "output.png"),
-    model_id_or_path: str = "runwayml/stable-diffusion-v1-5", #"stabilityai/sd-turbo",
+    model_id_or_path: str = "runwayml/stable-diffusion-v1-5", #"IDKiro/sdxs-512-0.9", #"runwayml/stable-diffusion-v1-5", #"stabilityai/sd-turbo",
     lora_dict: Optional[Dict[str, float]] = None,
     controlnet_dicts: Optional[List[Dict[str, float]]] = [{"lllyasviel/control_v11p_sd15_canny" : 0.75}], #None,
     prompt: str = "1girl with brown dog hair, thick glasses, smiling",

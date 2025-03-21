@@ -19,6 +19,7 @@
 #
 
 import gc
+import logging
 from collections import OrderedDict
 from typing import *
 
@@ -43,6 +44,8 @@ from polygraphy.backend.trt import util as trt_util
 
 from .models import CLIP, VAE, BaseModel, UNet, VAEEncoder
 
+# Use the same logger as in __init__.py
+logger = logging.getLogger('tensorrt_conversion')
 
 TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
 
@@ -412,19 +415,103 @@ def export_onnx(
     opt_batch_size: int,
     onnx_opset: int,
 ):
-    with torch.inference_mode(), torch.autocast("cuda"):
+    logger.info(f"Exporting ONNX model to {onnx_path}")
+    logger.info(f"Model type: {type(model).__name__}")
+    
+    # Before export, check for any parameters that require gradients
+    requires_grad_params = []
+    param_count = 0
+    
+    try:
+        for name, param in model.named_parameters():
+            param_count += 1
+            if param.requires_grad:
+                requires_grad_params.append(name)
+                
+        if requires_grad_params:
+            logger.warning(f"Found {len(requires_grad_params)} parameters with requires_grad=True out of {param_count} total parameters")
+            logger.info(f"First few parameters with gradients: {requires_grad_params[:5]}")
+            
+            # Set requires_grad to False for all parameters
+            logger.info("Setting requires_grad=False for all parameters")
+            for param in model.parameters():
+                param.requires_grad = False
+                
+        # Check for any buffers that require gradients (uncommon but possible)
+        for name, buf in model.named_buffers():
+            if buf.requires_grad:
+                logger.warning(f"Buffer {name} has requires_grad=True")
+                buf.requires_grad = False
+        
+        # Get input sample and verify requires_grad is False
         inputs = model_data.get_sample_input(opt_batch_size, opt_image_height, opt_image_width)
-        torch.onnx.export(
-            model,
-            inputs,
-            onnx_path,
-            export_params=True,
-            opset_version=onnx_opset,
-            do_constant_folding=True,
-            input_names=model_data.get_input_names(),
-            output_names=model_data.get_output_names(),
-            dynamic_axes=model_data.get_dynamic_axes(),
-        )
+        if isinstance(inputs, tuple):
+            for i, tensor in enumerate(inputs):
+                if tensor.requires_grad:
+                    logger.warning(f"Input tensor {i} requires gradients. Setting requires_grad=False")
+                    tensor.requires_grad = False
+        else:
+            if inputs.requires_grad:
+                logger.warning(f"Input tensor requires gradients. Setting requires_grad=False")
+                inputs.requires_grad = False
+                
+        # Extra safety for ControlNet
+        if hasattr(model, 'controlnets'):
+            logger.info(f"Found ControlNet models: {len(model.controlnets)}")
+            for i, controlnet in enumerate(model.controlnets):
+                control_requires_grad = []
+                control_param_count = 0
+                for name, param in controlnet.named_parameters():
+                    control_param_count += 1
+                    if param.requires_grad:
+                        control_requires_grad.append(name)
+                        param.requires_grad = False
+                        
+                if control_requires_grad:
+                    logger.warning(f"ControlNet {i}: Found {len(control_requires_grad)} parameters with requires_grad=True out of {control_param_count}")
+                    logger.info(f"ControlNet {i} first few params with gradients: {control_requires_grad[:5]}")
+    
+        with torch.inference_mode(), torch.autocast("cuda"):
+            logger.info(f"Starting ONNX export with inference_mode and autocast")
+            torch.onnx.export(
+                model,
+                inputs,
+                onnx_path,
+                export_params=True,
+                opset_version=onnx_opset,
+                do_constant_folding=True,
+                input_names=model_data.get_input_names(),
+                output_names=model_data.get_output_names(),
+                dynamic_axes=model_data.get_dynamic_axes(),
+            )
+            logger.info(f"Successfully exported ONNX model to {onnx_path}")
+    except Exception as e:
+        logger.error(f"Error during ONNX export: {str(e)}")
+        
+        # Additional error diagnostics specific to gradient issues
+        if "requires grad" in str(e).lower():
+            logger.error("Detected gradient-related error. Examining model components...")
+            
+            # Try to identify problematic tensors mentioned in the error
+            error_msg = str(e)
+            tensor_info = error_msg.split("[")[-1].split("]")[0] if "[" in error_msg and "]" in error_msg else "unknown"
+            logger.error(f"Problematic tensor info: {tensor_info}")
+            
+            # If the model has ControlNet, check for any module with training=True
+            if hasattr(model, 'controlnets'):
+                for i, controlnet in enumerate(model.controlnets):
+                    if controlnet.training:
+                        logger.error(f"ControlNet {i} is in training mode!")
+                        controlnet.eval()
+            
+            # Check if UNet is in training mode
+            if hasattr(model, 'unet') and model.unet.training:
+                logger.error("UNet is in training mode!")
+                model.unet.eval()
+                
+        # Re-raise the exception after logging
+        raise
+        
     del model
     gc.collect()
     torch.cuda.empty_cache()

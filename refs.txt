@@ -14,3 +14,7 @@ uv pip install cuda-python accelerate peft onnxruntime colored
 uv pip install wheel 'torch>=2.1.0' 'xformers>=0.0.22' 'triton>=2.1.0' 'diffusers>=0.19.3'
 uv pip install ninja
 uv pip install -v -U git+https://github.com/chengzeyi/stable-fast.git@main#egg=stable-fast --no-build-isolation
+
+gpg-connect-agent reloadagent /bye
+
+export GPG_TTY=$(tty)
