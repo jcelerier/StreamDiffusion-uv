@@ -22,7 +22,7 @@ def main(
     output: str = os.path.join(CURRENT_DIR, "..", "..", "images", "outputs", "output.png"),
     model_id_or_path: str = "runwayml/stable-diffusion-v1-5", #"IDKiro/sdxs-512-0.9", #"runwayml/stable-diffusion-v1-5", #"stabilityai/sd-turbo",
     lora_dict: Optional[Dict[str, float]] = None,
-    controlnet_dicts: Optional[List[Dict[str, float]]] = [{"lllyasviel/control_v11p_sd15_canny" : 0.75}], #None,
+    controlnet_dicts: Optional[List[Dict[str, float]]] = None, #[{"lllyasviel/control_v11p_sd15_canny" : 0.75}], #None,
     prompt: str = "1girl with brown dog hair, thick glasses, smiling",
     negative_prompt: str = "low quality, bad quality, blurry, low resolution",
     t_index_list: List[int] = [32, 45], #[22, 32, 45] # TRT will need to re-compile plus there is FPS difference based on these steps

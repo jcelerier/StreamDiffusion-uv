@@ -18,9 +18,11 @@
 #
 
 import onnx_graphsurgeon as gs
+from onnx.external_data_helper import convert_model_to_external_data
 import torch
-from onnx import shape_inference
-from polygraphy.backend.onnx.loader import fold_constants
+# from onnx import shape_inference
+# import onnx
+from polygraphy.backend.onnx.loader import fold_constants, infer_shapes
 
 
 class Optimizer:
@@ -52,16 +54,12 @@ class Optimizer:
             return onnx_graph
 
     def infer_shapes(self, return_onnx=False):
-        onnx_graph = gs.export_onnx(self.graph)
-        if onnx_graph.ByteSize() > 2147483648:
-            raise TypeError("ERROR: model size exceeds supported 2GB limit")
-        else:
-            onnx_graph = shape_inference.infer_shapes(onnx_graph)
+        model = gs.export_onnx(self.graph)
+        onnx_graph = infer_shapes(model)
 
         self.graph = gs.import_onnx(onnx_graph)
         if return_onnx:
             return onnx_graph
-
 
 class BaseModel:
     def __init__(
