@@ -1,15 +1,17 @@
 import os
 import sys
 import time
-from multiprocessing import Process, Queue, get_context
+from multiprocessing import Queue, get_context
 from typing import Literal
 
 import fire
+
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from utils.viewer import receive_images
 from utils.wrapper import StreamDiffusionWrapper
+
 
 def image_generation_process(
     queue: Queue,
@@ -38,9 +40,8 @@ def image_generation_process(
         model_id_or_path=model_id_or_path,
         t_index_list=[0],
         frame_buffer_size=1,
-        warmup=10,
         acceleration=acceleration,
-        use_lcm_lora=False,
+        CM_lora_type="none",
         mode="txt2img",
         cfg_type="none",
         use_denoising_batch=True,
@@ -64,6 +65,7 @@ def image_generation_process(
             print(f"fps: {fps}")
             return
 
+
 def main(
     prompt: str = "cat with sunglasses and a hat, photoreal, 8K",
     model_id_or_path: str = "stabilityai/sd-turbo",
@@ -72,7 +74,7 @@ def main(
     """
     Main function to start the image generation and viewer processes.
     """
-    ctx = get_context('spawn')
+    ctx = get_context("spawn")
     queue = ctx.Queue()
     fps_queue = ctx.Queue()
     process1 = ctx.Process(
@@ -86,6 +88,7 @@ def main(
 
     process1.join()
     process2.join()
+
 
 if __name__ == "__main__":
     fire.Fire(main)

@@ -1,16 +1,16 @@
 import gc
 import os
-from pathlib import Path
 import traceback
-from typing import List, Literal, Optional, Union, Dict
+from pathlib import Path
+from typing import Dict, List, Literal, Optional, Union
 
 import numpy as np
 import torch
 from diffusers import AutoencoderTiny, StableDiffusionPipeline
 from PIL import Image
 
-from streamdiffusion import StreamDiffusion
-from streamdiffusion.image_utils import postprocess_image
+from src.streamdiffusion import StreamDiffusion
+from src.streamdiffusion.image_utils import postprocess_image
 
 
 torch.set_grad_enabled(False)
@@ -24,20 +24,21 @@ class StreamDiffusionWrapper:
         model_id_or_path: str,
         t_index_list: List[int],
         lora_dict: Optional[Dict[str, float]] = None,
+        controlnet_dicts: Optional[List[Dict[str, float]]] = None,
         mode: Literal["img2img", "txt2img"] = "img2img",
         output_type: Literal["pil", "pt", "np", "latent"] = "pil",
         lcm_lora_id: Optional[str] = None,
+        HyperSD_lora_id: Optional[str] = None,
         vae_id: Optional[str] = None,
         device: Literal["cpu", "cuda"] = "cuda",
         dtype: torch.dtype = torch.float16,
         frame_buffer_size: int = 1,
         width: int = 512,
         height: int = 512,
-        warmup: int = 10,
         acceleration: Literal["none", "xformers", "tensorrt"] = "tensorrt",
         do_add_noise: bool = True,
         device_ids: Optional[List[int]] = None,
-        use_lcm_lora: bool = True,
+        CM_lora_type: Literal["lcm", "Hyper_SD", "none"] = "Hyper_SD",
         use_tiny_vae: bool = True,
         enable_similar_image_filter: bool = False,
         similar_image_filter_threshold: float = 0.98,
@@ -61,6 +62,10 @@ class StreamDiffusionWrapper:
             The lora_dict to load, by default None.
             Keys are the LoRA names and values are the LoRA scales.
             Example: {'LoRA_1' : 0.5 , 'LoRA_2' : 0.7 ,...}
+        controlnet_dicts : Optional[List[Dict[str, float]]], optional
+            The controlnet_dicts to load, by default None.
+            Keys are the controlnet names and values are the controlnet scales.
+            Example: [{'controlnet_1' : 0.5}, {'controlnet_2' : 0.7},...]
         mode : Literal["img2img", "txt2img"], optional
             txt2img or img2img, by default "img2img".
         output_type : Literal["pil", "pt", "np", "latent"], optional
@@ -69,6 +74,17 @@ class StreamDiffusionWrapper:
             The lcm_lora_id to load, by default None.
             If None, the default LCM-LoRA
             ("latent-consistency/lcm-lora-sdv1-5") will be used.
+        HyperSD_lora_id : Optional[str], optional
+            The HyperSD_lora_id to load, by default None.
+            If None, the default Hyper-SD
+            ("ByteDance/Hyper-SD/Hyper-SD15-1step-lora.safetensors") will be used.
+
+            "Hyper_SD_1step": "Hyper-SD15-1step-lora.safetensors"
+            "Hyper_SD_2step" : "Hyper-SD15-2steps-lora.safetensors"
+            "Hyper_SD_4step" : "Hyper-SD15-4steps-lora.safetensors"
+            "Hyper_SD_8step" : "Hyper-SD15-8steps-lora.safetensors"
+
+            Select the Hyper_SD_LoRA_name from the above list
         vae_id : Optional[str], optional
             The vae_id to load, by default None.
             If None, the default TinyVAE
@@ -83,8 +99,6 @@ class StreamDiffusionWrapper:
             The width of the image, by default 512.
         height : int, optional
             The height of the image, by default 512.
-        warmup : int, optional
-            The number of warmup steps to perform, by default 10.
         acceleration : Literal["none", "xformers", "tensorrt"], optional
             The acceleration method, by default "tensorrt".
         do_add_noise : bool, optional
@@ -118,20 +132,14 @@ class StreamDiffusionWrapper:
 
         if mode == "txt2img":
             if cfg_type != "none":
-                raise ValueError(
-                    f"txt2img mode accepts only cfg_type = 'none', but got {cfg_type}"
-                )
+                raise ValueError(f"txt2img mode accepts only cfg_type = 'none', but got {cfg_type}")
             if use_denoising_batch and frame_buffer_size > 1:
                 if not self.sd_turbo:
-                    raise ValueError(
-                        "txt2img mode cannot use denoising batch with frame_buffer_size > 1."
-                    )
+                    raise ValueError("txt2img mode cannot use denoising batch with frame_buffer_size > 1.")
 
         if mode == "img2img":
             if not use_denoising_batch:
-                raise NotImplementedError(
-                    "img2img mode must use denoising batch for now."
-                )
+                raise NotImplementedError("img2img mode must use denoising batch for now.")
 
         self.device = device
         self.dtype = dtype
@@ -140,25 +148,24 @@ class StreamDiffusionWrapper:
         self.mode = mode
         self.output_type = output_type
         self.frame_buffer_size = frame_buffer_size
-        self.batch_size = (
-            len(t_index_list) * frame_buffer_size
-            if use_denoising_batch
-            else frame_buffer_size
-        )
+        self.batch_size = len(t_index_list) * frame_buffer_size if use_denoising_batch else frame_buffer_size
 
         self.use_denoising_batch = use_denoising_batch
         self.use_safety_checker = use_safety_checker
 
+        self.is_controlnet_enabled = controlnet_dicts is not None
+
         self.stream: StreamDiffusion = self._load_model(
             model_id_or_path=model_id_or_path,
             lora_dict=lora_dict,
+            controlnet_dicts=controlnet_dicts,
             lcm_lora_id=lcm_lora_id,
+            HyperSD_lora_id=HyperSD_lora_id,
             vae_id=vae_id,
             t_index_list=t_index_list,
             acceleration=acceleration,
-            warmup=warmup,
             do_add_noise=do_add_noise,
-            use_lcm_lora=use_lcm_lora,
+            CM_lora_type=CM_lora_type,
             use_tiny_vae=use_tiny_vae,
             cfg_type=cfg_type,
             seed=seed,
@@ -166,12 +173,12 @@ class StreamDiffusionWrapper:
         )
 
         if device_ids is not None:
-            self.stream.unet = torch.nn.DataParallel(
-                self.stream.unet, device_ids=device_ids
-            )
+            self.stream.unet = torch.nn.DataParallel(self.stream.unet, device_ids=device_ids)
 
         if enable_similar_image_filter:
-            self.stream.enable_similar_image_filter(similar_image_filter_threshold, similar_image_filter_max_skip_frame)
+            self.stream.enable_similar_image_filter(
+                similar_image_filter_threshold, similar_image_filter_max_skip_frame
+            )
 
     def prepare(
         self,
@@ -208,6 +215,7 @@ class StreamDiffusionWrapper:
         self,
         image: Optional[Union[str, Image.Image, torch.Tensor]] = None,
         prompt: Optional[str] = None,
+        controlnet_images: Optional[Union[str, Image.Image, list[str], list[Image.Image], torch.Tensor]] = None,
     ) -> Union[Image.Image, List[Image.Image]]:
         """
         Performs img2img or txt2img based on the mode.
@@ -218,19 +226,28 @@ class StreamDiffusionWrapper:
             The image to generate from.
         prompt : Optional[str]
             The prompt to generate images from.
+        controlnet_images : Optional[Union[str, Image.Image, list[str], list[Image.Image], torch.Tensor]]
+            The controlnet image(s) to use for inference if controlnet is enabled.
+            by default None.
 
         Returns
         -------
         Union[Image.Image, List[Image.Image]]
             The generated image.
         """
+        assert (self.is_controlnet_enabled and controlnet_images is not None) or (
+            not self.is_controlnet_enabled and controlnet_images is None
+        ), "If ControlNet is disabled, please do not provide controlnet_images, vice versa."
+
         if self.mode == "img2img":
-            return self.img2img(image, prompt)
+            return self.img2img(image, prompt, controlnet_images)
         else:
-            return self.txt2img(prompt)
+            return self.txt2img(prompt, controlnet_images)
 
     def txt2img(
-        self, prompt: Optional[str] = None
+        self,
+        prompt: Optional[str] = None,
+        controlnet_images: Optional[Union[str, Image.Image, list[str], list[Image.Image], torch.Tensor]] = None,
     ) -> Union[Image.Image, List[Image.Image], torch.Tensor, np.ndarray]:
         """
         Performs txt2img.
@@ -239,6 +256,9 @@ class StreamDiffusionWrapper:
         ----------
         prompt : Optional[str]
             The prompt to generate images from.
+        controlnet_images : Optional[Union[str, Image.Image, list[str], list[Image.Image], torch.Tensor]]
+            The controlnet image(s) to use for inference if controlnet is enabled.
+            by default None.
 
         Returns
         -------
@@ -248,16 +268,20 @@ class StreamDiffusionWrapper:
         if prompt is not None:
             self.stream.update_prompt(prompt)
 
+        if isinstance(controlnet_images, str) or isinstance(controlnet_images, Image.Image):
+            controlnet_images = self.preprocess_image(controlnet_images, is_controlnet_image=True)
+        elif isinstance(controlnet_images, list):
+            controlnet_images = [self.preprocess_image(img, is_controlnet_image=True) for img in controlnet_images]
+            controlnet_images = torch.stack(controlnet_images)
+
         if self.sd_turbo:
             image_tensor = self.stream.txt2img_sd_turbo(self.batch_size)
         else:
-            image_tensor = self.stream.txt2img(self.frame_buffer_size)
+            image_tensor = self.stream.txt2img(self.frame_buffer_size, controlnet_images)
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
         if self.use_safety_checker:
-            safety_checker_input = self.feature_extractor(
-                image, return_tensors="pt"
-            ).to(self.device)
+            safety_checker_input = self.feature_extractor(image, return_tensors="pt").to(self.device)
             _, has_nsfw_concept = self.safety_checker(
                 images=image_tensor.to(self.dtype),
                 clip_input=safety_checker_input.pixel_values.to(self.dtype),
@@ -267,7 +291,10 @@ class StreamDiffusionWrapper:
         return image
 
     def img2img(
-        self, image: Union[str, Image.Image, torch.Tensor], prompt: Optional[str] = None
+        self,
+        image: Union[str, Image.Image, torch.Tensor],
+        prompt: Optional[str] = None,
+        controlnet_images: Optional[Union[str, Image.Image, list[str], list[Image.Image], torch.Tensor]] = None,
     ) -> Union[Image.Image, List[Image.Image], torch.Tensor, np.ndarray]:
         """
         Performs img2img.
@@ -276,6 +303,10 @@ class StreamDiffusionWrapper:
         ----------
         image : Union[str, Image.Image, torch.Tensor]
             The image to generate from.
+        prompt : Optional[str]
+            The prompt to generate images from.
+        controlnet_images : Optional[Union[str, Image.Image, list[str], list[Image.Image], torch.Tensor]]
+            The controlnet image(s) to use for inference if controlnet is enabled.
 
         Returns
         -------
@@ -288,13 +319,18 @@ class StreamDiffusionWrapper:
         if isinstance(image, str) or isinstance(image, Image.Image):
             image = self.preprocess_image(image)
 
-        image_tensor = self.stream(image)
+        if isinstance(controlnet_images, str) or isinstance(controlnet_images, Image.Image):
+            controlnet_images = self.preprocess_image(controlnet_images, is_controlnet_image=True)
+
+        if isinstance(controlnet_images, list):
+            controlnet_images = [self.preprocess_image(img, is_controlnet_image=True) for img in controlnet_images]
+            controlnet_images = torch.stack(controlnet_images)
+
+        image_tensor = self.stream(image, controlnet_images=controlnet_images)
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
         if self.use_safety_checker:
-            safety_checker_input = self.feature_extractor(
-                image, return_tensors="pt"
-            ).to(self.device)
+            safety_checker_input = self.feature_extractor(image, return_tensors="pt").to(self.device)
             _, has_nsfw_concept = self.safety_checker(
                 images=image_tensor.to(self.dtype),
                 clip_input=safety_checker_input.pixel_values.to(self.dtype),
@@ -303,7 +339,7 @@ class StreamDiffusionWrapper:
 
         return image
 
-    def preprocess_image(self, image: Union[str, Image.Image]) -> torch.Tensor:
+    def preprocess_image(self, image: Union[str, Image.Image], is_controlnet_image: bool = False) -> torch.Tensor:
         """
         Preprocesses the image.
 
@@ -311,6 +347,8 @@ class StreamDiffusionWrapper:
         ----------
         image : Union[str, Image.Image, torch.Tensor]
             The image to preprocess.
+        is_controlnet_image : bool, optional
+            Whether the image is a control image or not, by default False.
 
         Returns
         -------
@@ -322,9 +360,15 @@ class StreamDiffusionWrapper:
         if isinstance(image, Image.Image):
             image = image.convert("RGB").resize((self.width, self.height))
 
-        return self.stream.image_processor.preprocess(
-            image, self.height, self.width
-        ).to(device=self.device, dtype=self.dtype)
+        return (
+            self.stream.image_processor.preprocess(image, self.height, self.width).to(
+                device=self.device, dtype=self.dtype
+            )
+            if not is_controlnet_image
+            else self.stream.controlnet_image_processor.preprocess(image, self.height, self.width).to(
+                device=self.device, dtype=self.dtype
+            )
+        )
 
     def postprocess_image(
         self, image_tensor: torch.Tensor, output_type: str = "pil"
@@ -352,12 +396,13 @@ class StreamDiffusionWrapper:
         model_id_or_path: str,
         t_index_list: List[int],
         lora_dict: Optional[Dict[str, float]] = None,
+        controlnet_dicts: Optional[Dict[str, float]] = None,
         lcm_lora_id: Optional[str] = None,
+        HyperSD_lora_id: Optional[str] = None,
         vae_id: Optional[str] = None,
         acceleration: Literal["none", "xformers", "tensorrt"] = "tensorrt",
-        warmup: int = 10,
         do_add_noise: bool = True,
-        use_lcm_lora: bool = True,
+        CM_lora_type: Literal["lcm", "Hyper_SD", "none"] = "lcm",
         use_tiny_vae: bool = True,
         cfg_type: Literal["none", "full", "self", "initialize"] = "self",
         seed: int = 2,
@@ -385,14 +430,16 @@ class StreamDiffusionWrapper:
             The lora_dict to load, by default None.
             Keys are the LoRA names and values are the LoRA scales.
             Example: {'LoRA_1' : 0.5 , 'LoRA_2' : 0.7 ,...}
+        controlnet_dicts : Optional[Dict[str, float]], optional
+            The controlnet_dict to load, by default None.
+            Keys are the controlnet names and values are the controlnet scales.
+            Example: {'controlnet_1' : 0.5 , 'controlnet_2' : 0.7 ,...}
         lcm_lora_id : Optional[str], optional
             The lcm_lora_id to load, by default None.
         vae_id : Optional[str], optional
             The vae_id to load, by default None.
         acceleration : Literal["none", "xfomers", "sfast", "tensorrt"], optional
             The acceleration method, by default "tensorrt".
-        warmup : int, optional
-            The number of warmup steps to perform, by default 10.
         do_add_noise : bool, optional
             Whether to add noise for following denoising steps or not,
             by default True.
@@ -412,7 +459,6 @@ class StreamDiffusionWrapper:
         StreamDiffusion
             The loaded model.
         """
-
         try:  # Load from local directory
             pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
                 model_id_or_path,
@@ -439,14 +485,35 @@ class StreamDiffusionWrapper:
             cfg_type=cfg_type,
         )
         if not self.sd_turbo:
-            if use_lcm_lora:
+            if CM_lora_type == "lcm":
+                print("-----------------Using lcm-----------------")
                 if lcm_lora_id is not None:
-                    stream.load_lcm_lora(
-                        pretrained_model_name_or_path_or_dict=lcm_lora_id
-                    )
+                    stream.load_lcm_lora(pretrained_model_name_or_path_or_dict=lcm_lora_id)
                 else:
                     stream.load_lcm_lora()
                 stream.fuse_lora()
+
+            elif CM_lora_type == "Hyper_SD":
+                print(f"-----------------Using Hyper_SD {HyperSD_lora_id}-----------------")
+                if HyperSD_lora_id is not None:
+                    stream.load_HyperSD_lora(
+                        pretrained_model_name_or_path_or_dict="ByteDance/Hyper-SD", model_name=HyperSD_lora_id
+                    )
+                elif HyperSD_lora_id is None and controlnet_dicts is not None:
+                    stream.load_HyperSD_lora(
+                        pretrained_model_name_or_path_or_dict="ByteDance/Hyper-SD",
+                        model_name="Hyper-SD15-4step-lora.safetensors",
+                    )
+                    print("To generate better results with ControlNet, using 4-steps Hyper-SD instead of 1-step.")
+                else:
+                    stream.load_HyperSD_lora(
+                        pretrained_model_name_or_path_or_dict="ByteDance/Hyper-SD",
+                        model_name="Hyper-SD15-1step-lora.safetensors",
+                    )
+                    print("Using 1-step Hyper-SD.")
+                stream.fuse_lora()
+            else:  # CM_lora_type == "none"
+                pass
 
             if lora_dict is not None:
                 for lora_name, lora_scale in lora_dict.items():
@@ -454,11 +521,13 @@ class StreamDiffusionWrapper:
                     stream.fuse_lora(lora_scale=lora_scale)
                     print(f"Use LoRA: {lora_name} in weights {lora_scale}")
 
+            if controlnet_dicts is not None:
+                stream.load_controlnet(controlnet_dicts)
+                print(f"Use controlnet: {controlnet_dicts}")
+
         if use_tiny_vae:
             if vae_id is not None:
-                stream.vae = AutoencoderTiny.from_pretrained(vae_id).to(
-                    device=pipe.device, dtype=pipe.dtype
-                )
+                stream.vae = AutoencoderTiny.from_pretrained(vae_id).to(device=pipe.device, dtype=pipe.dtype)
             else:
                 stream.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(
                     device=pipe.device, dtype=pipe.dtype
@@ -469,19 +538,23 @@ class StreamDiffusionWrapper:
                 stream.pipe.enable_xformers_memory_efficient_attention()
             if acceleration == "tensorrt":
                 from polygraphy import cuda
-                from streamdiffusion.acceleration.tensorrt import (
+
+                from src.streamdiffusion.acceleration.tensorrt import (
                     TorchVAEEncoder,
+                    compile_control_unet,
                     compile_unet,
                     compile_vae_decoder,
                     compile_vae_encoder,
                 )
-                from streamdiffusion.acceleration.tensorrt.engine import (
+                from src.streamdiffusion.acceleration.tensorrt.engine import (
                     AutoencoderKLEngine,
+                    UNet2DConditionControlNetModelEngine,
                     UNet2DConditionModelEngine,
                 )
-                from streamdiffusion.acceleration.tensorrt.models import (
+                from src.streamdiffusion.acceleration.tensorrt.models import (
                     VAE,
                     UNet,
+                    UNetWithControlNet,
                     VAEEncoder,
                 )
 
@@ -492,9 +565,9 @@ class StreamDiffusionWrapper:
                 ):
                     maybe_path = Path(model_id_or_path)
                     if maybe_path.exists():
-                        return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch_size}--min_batch-{min_batch_size}--mode-{self.mode}"
+                        return f"{maybe_path.stem}--CM_lora_type-{CM_lora_type}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch_size}--min_batch-{min_batch_size}--mode-{self.mode}--controlnet-{'enabled' if self.is_controlnet_enabled else 'disabled'}"
                     else:
-                        return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch_size}--min_batch-{min_batch_size}--mode-{self.mode}"
+                        return f"{model_id_or_path}--CM_lora_type-{CM_lora_type}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch_size}--min_batch-{min_batch_size}--mode-{self.mode}--controlnet-{'enabled' if self.is_controlnet_enabled else 'disabled'}"
 
                 engine_dir = Path(engine_dir)
                 unet_path = os.path.join(
@@ -510,12 +583,8 @@ class StreamDiffusionWrapper:
                     engine_dir,
                     create_prefix(
                         model_id_or_path=model_id_or_path,
-                        max_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        min_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
+                        max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                        min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     ),
                     "vae_encoder.engine",
                 )
@@ -523,46 +592,57 @@ class StreamDiffusionWrapper:
                     engine_dir,
                     create_prefix(
                         model_id_or_path=model_id_or_path,
-                        max_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        min_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
+                        max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                        min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     ),
                     "vae_decoder.engine",
                 )
 
                 if not os.path.exists(unet_path):
                     os.makedirs(os.path.dirname(unet_path), exist_ok=True)
-                    unet_model = UNet(
-                        fp16=True,
-                        device=stream.device,
-                        max_batch_size=stream.trt_unet_batch_size,
-                        min_batch_size=stream.trt_unet_batch_size,
-                        embedding_dim=stream.text_encoder.config.hidden_size,
-                        unet_dim=stream.unet.config.in_channels,
-                    )
-                    compile_unet(
-                        stream.unet,
-                        unet_model,
-                        unet_path + ".onnx",
-                        unet_path + ".opt.onnx",
-                        unet_path,
-                        opt_batch_size=stream.trt_unet_batch_size,
-                    )
+                    if self.is_controlnet_enabled:
+                        unet_model = UNetWithControlNet(
+                            fp16=True,
+                            device=stream.device,
+                            max_batch_size=stream.trt_unet_batch_size,
+                            min_batch_size=stream.trt_unet_batch_size,
+                            num_controlnets=len(controlnet_dicts),
+                            embedding_dim=stream.text_encoder.config.hidden_size,
+                            unet_dim=stream.unet.unet.config.in_channels,
+                        )
+                        compile_control_unet(
+                            stream.unet,
+                            unet_model,
+                            unet_path + ".onnx",
+                            unet_path + ".opt.onnx",
+                            unet_path,
+                            opt_batch_size=stream.trt_unet_batch_size,
+                        )
+                    else:
+                        unet_model = UNet(
+                            fp16=True,
+                            device=stream.device,
+                            max_batch_size=stream.trt_unet_batch_size,
+                            min_batch_size=stream.trt_unet_batch_size,
+                            embedding_dim=stream.text_encoder.config.hidden_size,
+                            unet_dim=stream.unet.config.in_channels,
+                        )
+                        compile_unet(
+                            stream.unet,
+                            unet_model,
+                            unet_path + ".onnx",
+                            unet_path + ".opt.onnx",
+                            unet_path,
+                            opt_batch_size=stream.trt_unet_batch_size,
+                        )
 
                 if not os.path.exists(vae_decoder_path):
                     os.makedirs(os.path.dirname(vae_decoder_path), exist_ok=True)
                     stream.vae.forward = stream.vae.decode
                     vae_decoder_model = VAE(
                         device=stream.device,
-                        max_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        min_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
+                        max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                        min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     )
                     compile_vae_decoder(
                         stream.vae,
@@ -570,9 +650,7 @@ class StreamDiffusionWrapper:
                         vae_decoder_path + ".onnx",
                         vae_decoder_path + ".opt.onnx",
                         vae_decoder_path,
-                        opt_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
+                        opt_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     )
                     delattr(stream.vae, "forward")
 
@@ -581,12 +659,8 @@ class StreamDiffusionWrapper:
                     vae_encoder = TorchVAEEncoder(stream.vae).to(torch.device("cuda"))
                     vae_encoder_model = VAEEncoder(
                         device=stream.device,
-                        max_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        min_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
+                        max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                        min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     )
                     compile_vae_encoder(
                         vae_encoder,
@@ -594,9 +668,7 @@ class StreamDiffusionWrapper:
                         vae_encoder_path + ".onnx",
                         vae_encoder_path + ".opt.onnx",
                         vae_encoder_path,
-                        opt_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
+                        opt_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     )
 
                 cuda_stream = cuda.Stream()
@@ -604,9 +676,10 @@ class StreamDiffusionWrapper:
                 vae_config = stream.vae.config
                 vae_dtype = stream.vae.dtype
 
-                stream.unet = UNet2DConditionModelEngine(
-                    unet_path, cuda_stream, use_cuda_graph=False
-                )
+                if self.is_controlnet_enabled:
+                    stream.unet = UNet2DConditionControlNetModelEngine(unet_path, cuda_stream, use_cuda_graph=False)
+                else:
+                    stream.unet = UNet2DConditionModelEngine(unet_path, cuda_stream, use_cuda_graph=False)
                 stream.vae = AutoencoderKLEngine(
                     vae_encoder_path,
                     vae_decoder_path,
@@ -622,42 +695,39 @@ class StreamDiffusionWrapper:
 
                 print("TensorRT acceleration enabled.")
             if acceleration == "sfast":
-                from streamdiffusion.acceleration.sfast import (
+                from src.streamdiffusion.acceleration.sfast import (
                     accelerate_with_stable_fast,
                 )
 
                 stream = accelerate_with_stable_fast(stream)
                 print("StableFast acceleration enabled.")
-        except Exception:
-            traceback.print_exc()
+        except Exception as e:
+            print(e)
+            # traceback.print_exc()
             print("Acceleration has failed. Falling back to normal mode.")
 
-        if seed < 0: # Random seed
+        if seed < 0:  # Random seed
             seed = np.random.randint(0, 1000000)
 
         stream.prepare(
             "",
             "",
             num_inference_steps=50,
-            guidance_scale=1.1
-            if stream.cfg_type in ["full", "self", "initialize"]
-            else 1.0,
-            generator=torch.manual_seed(seed),
+            guidance_scale=1.1 if stream.cfg_type in ["full", "self", "initialize"] else 1.0,
+            generator=torch.Generator(),
             seed=seed,
         )
 
         if self.use_safety_checker:
-            from transformers import CLIPFeatureExtractor
             from diffusers.pipelines.stable_diffusion.safety_checker import (
                 StableDiffusionSafetyChecker,
             )
+            from transformers import CLIPFeatureExtractor
 
             self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(
                 "CompVis/stable-diffusion-safety-checker"
             ).to(pipe.device)
-            self.feature_extractor = CLIPFeatureExtractor.from_pretrained(
-                "openai/clip-vit-base-patch32"
-            )
+            self.feature_extractor = CLIPFeatureExtractor.from_pretrained("openai/clip-vit-base-patch32")
             self.nsfw_fallback_img = Image.new("RGB", (512, 512), (0, 0, 0))
 
         return stream

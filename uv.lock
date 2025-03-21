@@ -186,6 +186,15 @@ wheels = [
 ]
 
 [[package]]
+name = "fire"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "termcolor" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6b/b6/82c7e601d6d3c3278c40b7bd35e17e82aa227f050aa9f66cb7b7fce29471/fire-0.7.0.tar.gz", hash = "sha256:961550f07936eaf65ad1dc8360f2b2bf8408fad46abbfa4d2a3794f8d2a95cdf", size = 87189 }
+
+[[package]]
 name = "flatbuffers"
 version = "25.2.10"
 source = { registry = "https://pypi.org/simple" }
@@ -835,6 +844,7 @@ dependencies = [
     { name = "colored" },
     { name = "cuda-python" },
     { name = "diffusers" },
+    { name = "fire" },
     { name = "ninja" },
     { name = "onnx-graphsurgeon" },
     { name = "onnxruntime" },
@@ -852,6 +862,7 @@ requires-dist = [
     { name = "colored", specifier = ">=2.3.0" },
     { name = "cuda-python", specifier = ">=12.8.0" },
     { name = "diffusers", specifier = ">=0.32.2" },
+    { name = "fire", specifier = ">=0.7.0" },
     { name = "ninja", specifier = ">=1.11.1.3" },
     { name = "onnx-graphsurgeon", specifier = ">=0.3.27" },
     { name = "onnxruntime", specifier = ">=1.21.0" },
@@ -1036,6 +1047,15 @@ dependencies = [
     { name = "nvidia-cuda-runtime-cu12" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ea/eb/932f9b007a3a77824dcd964e2f58b2272d957ac8b3923a6accf9a026f328/tensorrt_cu12_libs-10.9.0.34.tar.gz", hash = "sha256:9aa7ee34b9f1cebde126f48718eddd3602a38914f6050d60d2c12af8eb597043", size = 704 }
+
+[[package]]
+name = "termcolor"
+version = "2.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/72/88311445fd44c455c7d553e61f95412cf89054308a1aa2434ab835075fc5/termcolor-2.5.0.tar.gz", hash = "sha256:998d8d27da6d48442e8e1f016119076b690d962507531df4890fcd2db2ef8a6f", size = 13057 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/be/df630c387a0a054815d60be6a97eb4e8f17385d5d6fe660e1c02750062b4/termcolor-2.5.0-py3-none-any.whl", hash = "sha256:37b17b5fc1e604945c2642c872a3764b5d547a48009871aea3edd3afa180afb8", size = 7755 },
+]
 
 [[package]]
 name = "tokenizers"

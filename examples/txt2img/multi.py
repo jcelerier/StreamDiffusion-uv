@@ -1,20 +1,29 @@
 import os
 import sys
-from typing import Literal, Dict, Optional
+from typing import Dict, List, Literal, Optional
 
-import fire
+from controlnet_aux.processor import Processor
+
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from utils.wrapper import StreamDiffusionWrapper
 
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def main(
-    output: str = os.path.join(CURRENT_DIR, "..", "..", "images", "outputs",),
+    output: str = os.path.join(
+        CURRENT_DIR,
+        "..",
+        "..",
+        "images",
+        "outputs",
+    ),
     model_id_or_path: str = "KBlueLeaf/kohaku-v2.1",
     lora_dict: Optional[Dict[str, float]] = None,
+    controlnet_dicts: Optional[List[Dict[str, float]]] = None,
     prompt: str = "1girl with brown dog hair, thick glasses, smiling",
     width: int = 512,
     height: int = 512,
@@ -22,7 +31,6 @@ def main(
     acceleration: Literal["none", "xformers", "tensorrt"] = "xformers",
     seed: int = 2,
 ):
-    
     """
     Process for generating images based on a prompt using a specified model.
 
@@ -36,6 +44,10 @@ def main(
         The lora_dict to load, by default None.
         Keys are the LoRA names and values are the LoRA scales.
         Example: {'LoRA_1' : 0.5 , 'LoRA_2' : 0.7 ,...}
+    controlnet_dicts : Optional[List[Dict[str, float]], optional
+        The controlnet_dicts to load, by default None.
+        Keys are the ControlNet names and values are the ControlNet scales.
+        Example: [{'controlnet_1' : 0.5}, {'controlnet_2' : 0.7},...]
     prompt : str
         The prompt to generate images from.
     width : int, optional
@@ -55,12 +67,14 @@ def main(
     stream = StreamDiffusionWrapper(
         model_id_or_path=model_id_or_path,
         lora_dict=lora_dict,
-        t_index_list=[0, 16, 32, 45],
+        controlnet_dicts=controlnet_dicts,
+        HyperSD_lora_id="Hyper-SD15-8steps-lora.safetensors",
+        t_index_list=[0, 8, 16, 24, 32, 40, 45, 49],
         frame_buffer_size=frame_buffer_size,
         width=width,
         height=height,
-        warmup=10,
         acceleration=acceleration,
+        CM_lora_type="Hyper_SD",
         mode="txt2img",
         use_denoising_batch=False,
         cfg_type="none",
@@ -72,10 +86,38 @@ def main(
         num_inference_steps=50,
     )
 
-    output_images = stream()
+    from PIL import Image
+
+    controlnet_image = Image.open("/home/radius5/workspace/ono/StreamDiffusion/ookawakinketsu0379_TP_V.jpg")
+    canny = Processor("canny")
+    lineart = Processor("lineart_anime")
+    controlnet_images = [canny(controlnet_image, to_pil=True), lineart(controlnet_image, to_pil=True)]
+
+    output_images = stream(controlnet_images=controlnet_images)
     for i, output_image in enumerate(output_images):
         output_image.save(os.path.join(output, f"{i:02}.png"))
 
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    # fire.Fire(main)
+    main(
+        output=os.path.join(
+            CURRENT_DIR,
+            "..",
+            "..",
+            "images",
+            "outputs",
+        ),
+        model_id_or_path="KBlueLeaf/kohaku-v2.1",
+        lora_dict=None,
+        controlnet_dicts=[
+            {"lllyasviel/control_v11p_sd15_canny": 1.0},
+            {"lllyasviel/control_v11p_sd15s2_lineart_anime": 1.0},
+        ],
+        prompt="1girl with brown hair",
+        width=512,
+        height=512,
+        frame_buffer_size=3,
+        acceleration="xformers",
+        seed=2,
+    )

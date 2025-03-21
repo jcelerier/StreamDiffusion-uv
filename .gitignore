@@ -206,5 +206,6 @@ __pycache__/
 
 models/RealESR*
 *.safetensors
+*.webp
 
 refs.txt
