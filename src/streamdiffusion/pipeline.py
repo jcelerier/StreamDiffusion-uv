@@ -146,7 +146,7 @@ class StreamDiffusion:
             unet=self.unet,
             controlnets=controlnets,
             controlnet_scales=[list(controlnet_dict.values())[0] for controlnet_dict in controlnet_dicts],
-        )
+        )#.eval()
 
     def enable_similar_image_filter(self, threshold: float = 0.98, max_skip_frame: float = 10) -> None:
         self.similar_image_filter = True
