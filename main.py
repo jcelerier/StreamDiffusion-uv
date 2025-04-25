@@ -6,6 +6,7 @@ src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "src"))
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
+import cv2 as cv
 import torch
 from diffusers import AutoencoderTiny, StableDiffusionPipeline
 from diffusers.utils import load_image
@@ -16,21 +17,23 @@ from streamdiffusion.acceleration.tensorrt import accelerate_with_tensorrt
 # from streamdiffusion.acceleration.sfast import accelerate_with_stable_fast
 
 # You can load any models using diffuser's StableDiffusionPipeline
-pipe = StableDiffusionPipeline.from_pretrained("KBlueLeaf/kohaku-v2.1").to(
+pipe = StableDiffusionPipeline.from_pretrained("SimianLuo/LCM_Dreamshaper_v7").to(
     device=torch.device("cuda"),
     dtype=torch.float16,
 )
-
+# pipe.load_lora_weights('FirstLast/RealisticVision-LoRA-libr-0.2', weight_name='pytorch_lora_weights.safetensors')
 # Wrap the pipeline in StreamDiffusion
 stream = StreamDiffusion(
     pipe,
-    t_index_list=[32, 45],
+    t_index_list=[ 16, 38 ],
     torch_dtype=torch.float16,
+    cfg_type="self",
 )
 
 # If the loaded model is not LCM, merge LCM
-stream.load_lcm_lora()
-stream.fuse_lora()
+#stream.load_lcm_lora("latent-consistency/lcm-lora-sdv1-5")
+# stream.fuse_lora()
+
 # Use Tiny VAE for further acceleration
 stream.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(device=pipe.device, dtype=pipe.dtype)
 
@@ -48,49 +51,22 @@ stream = accelerate_with_tensorrt(
 
 ###################################################################
 
-prompt = "1girl with dog hair, thick frame glasses"
+prompt = "Self-portrait oil painting, boticelli, rembrandt, a beautiful cyborg male with golden hair, 8k"
 # Prepare the stream
-stream.prepare(prompt)
+stream.prepare(prompt=prompt,
+               negative_prompt="anime, handdrawn, pencil, manga",
+            num_inference_steps=50,
+            guidance_scale=1.1)
 
 # Prepare image
-init_image = load_image("assets/img2img_example.png").resize((512, 512))
+init_image = load_image("/tmp/a.png").resize((512, 512))
 
 # Warmup >= len(t_index_list) x frame_buffer_size
 for _ in range(2):
     stream(init_image)
 
-# Import time for measuring performance
-import time
-import numpy as np
-
-# Number of iterations
-iterations = 1000
-times = []
-
-# Run the stream for specified iterations
-for i in range(iterations):
-    start_time = time.time()
-    x_output = stream(init_image)
-    end_time = time.time()
-    elapsed = end_time - start_time
-    times.append(elapsed)
-    
-    if (i + 1) % 100 == 0:
-        print(f"Completed {i+1}/{iterations} iterations")
-
-# Calculate statistics
-times = np.array(times)
-avg_time = np.mean(times)
-min_time = np.min(times)
-max_time = np.max(times)
-std_time = np.std(times)
-fps = 1.0 / avg_time
-
-# Print statistics
-print("\nPerformance Statistics:")
-print(f"Total images generated: {iterations}")
-print(f"Average time per image: {avg_time:.4f} seconds")
-print(f"Minimum time per image: {min_time:.4f} seconds")
-print(f"Maximum time per image: {max_time:.4f} seconds")
-print(f"Standard deviation: {std_time:.4f} seconds")
-print(f"Frames per second (FPS): {fps:.2f}")
+x_output = stream(init_image)
+image = postprocess_image(x_output)
+dir(image)
+dir(image[0])
+image[0].save("/tmp/foo.png")
