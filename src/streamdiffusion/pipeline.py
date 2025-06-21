@@ -158,6 +158,8 @@ class StreamDiffusion:
         if self.guidance_scale > 1.0:
             do_classifier_free_guidance = True
 
+
+        self.current_negative_prompt = negative_prompt
         encoder_output = self.pipe.encode_prompt(
             prompt=prompt,
             device=self.device,
@@ -178,6 +180,8 @@ class StreamDiffusion:
             self.prompt_embeds = torch.cat(
                 [uncond_prompt_embeds, self.prompt_embeds], dim=0
             )
+
+
 
         self.scheduler.set_timesteps(num_inference_steps, self.device)
         self.timesteps = self.scheduler.timesteps.to(self.device)
@@ -260,6 +264,123 @@ class StreamDiffusion:
             do_classifier_free_guidance=False,
         )
         self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
+
+        if self.use_denoising_batch and self.cfg_type == "full":
+            uncond_prompt_embeds = encoder_output[1].repeat(self.batch_size, 1, 1)
+        elif self.cfg_type == "initialize":
+            uncond_prompt_embeds = encoder_output[1].repeat(self.frame_bff_size, 1, 1)
+
+        if self.guidance_scale > 1.0 and (
+            self.cfg_type == "initialize" or self.cfg_type == "full"
+        ):
+            self.prompt_embeds = torch.cat(
+                [uncond_prompt_embeds, self.prompt_embeds], dim=0
+            )
+
+    @torch.no_grad()
+    def update_prompts(
+        self,
+        weighted_prompts: List[Tuple[str, float]],
+        negative_prompt: Optional[str] = None,
+    ) -> None:
+        """
+        Updates the prompt embeddings by blending multiple weighted prompts.
+
+        Args:
+            weighted_prompts (List[Tuple[str, float]]): A list of tuples, where each
+                tuple contains a prompt string and its corresponding weight.
+                Example: [("a cat", 0.6), ("a dog", 0.4)]
+            negative_prompt (Optional[str]): The negative prompt to use. If None,
+                uses the negative prompt from the last `prepare` call or the
+                last `update_prompt` call that set a negative prompt.
+        """
+        if not weighted_prompts:
+            print("Warning: weighted_prompts list is empty. Prompt embeddings not updated.")
+            return
+
+        # --- Normalize weights ---
+        total_weight = sum(w for _, w in weighted_prompts)
+        if total_weight == 0: # Avoid division by zero, assign equal weights if all are zero
+            print("Warning: Total weight of prompts is zero. Assigning equal weights.")
+            num_prompts = len(weighted_prompts)
+            normalized_weights = [1.0 / num_prompts] * num_prompts
+        else:
+            normalized_weights = [w / total_weight for _, w in weighted_prompts]
+
+        # --- Encode individual conditional prompts and blend them ---
+        blended_cond_embedding = None
+        first_embedding_shape = None
+
+        for i, (p_str, _) in enumerate(weighted_prompts):
+            # Encode ONLY the conditional part for each prompt
+            # We pass an empty negative prompt and turn off CFG for this specific call
+            # to isolate the conditional embedding of p_str.
+            cond_embed_output = self.pipe.encode_prompt(
+                prompt=p_str,
+                device=self.device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=False, # Get only conditional
+                negative_prompt="", # Provide empty to avoid issues, though it won't be used
+            )
+            cond_embed = cond_embed_output[0] # output[0] is prompt_embeds (conditional)
+
+            if first_embedding_shape is None:
+                first_embedding_shape = cond_embed.shape
+                blended_cond_embedding = torch.zeros_like(cond_embed, device=self.device, dtype=self.dtype)
+
+            if cond_embed.shape != first_embedding_shape:
+                raise ValueError(
+                    f"Prompt '{p_str}' produced an embedding of shape {cond_embed.shape}, "
+                    f"expected {first_embedding_shape} based on the first prompt. "
+                    "Ensure all prompts result in compatible embedding shapes (e.g., check token lengths)."
+                )
+
+            blended_cond_embedding += normalized_weights[i] * cond_embed
+
+        if blended_cond_embedding is None: # Should not happen if weighted_prompts is not empty
+            print("Error: Blended conditional embedding could not be created.")
+            return
+
+        repeated_blended_cond_embed = blended_cond_embedding.repeat(self.batch_size, 1, 1)
+
+        # --- Handle unconditional (negative) prompt ---
+        do_cfg = self.guidance_scale > 1.0
+        negative_prompt_to_use = negative_prompt if negative_prompt is not None else self.current_negative_prompt
+
+        # Update current negative prompt if a new one was explicitly passed
+        if negative_prompt is not None:
+            self.current_negative_prompt = negative_prompt
+
+        if do_cfg and (self.cfg_type == "initialize" or self.cfg_type == "full"):
+            # Get the unconditional embedding for the chosen negative_prompt_to_use
+            # We need to call encode_prompt such that it returns the negative_prompt_embeds
+            uncond_output = self.pipe.encode_prompt(
+                prompt="", # A dummy prompt, its conditional part is ignored
+                device=self.device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=True, # Essential to get uncond part
+                negative_prompt=negative_prompt_to_use,
+            )
+            actual_uncond_embed = uncond_output[1] # output[1] is negative_prompt_embeds
+
+            if actual_uncond_embed is None:
+                raise ValueError(
+                    "Failed to obtain unconditional_embeddings for the negative prompt. "
+                    "Ensure `do_classifier_free_guidance=True` is effective in `encode_prompt`."
+                )
+
+            uncond_repeat_factor = self.frame_bff_size if self.cfg_type == "initialize" else self.batch_size
+            repeated_uncond_embed = actual_uncond_embed.repeat(uncond_repeat_factor, 1, 1)
+
+            self.prompt_embeds = torch.cat([repeated_uncond_embed, repeated_blended_cond_embed], dim=0)
+        else: # No specific CFG or "self" CFG that doesn't use concatenated embeds here
+            self.prompt_embeds = repeated_blended_cond_embed
+
+        # self.current_prompt is not updated as it's a blend.
+        # self.current_negative_prompt is updated above if a new one was given.
+        # print(f"Prompt embeddings updated with a blend of {len(weighted_prompts)} prompts.")
+        # print(f"Using negative prompt: '{self.current_negative_prompt}'")
+
 
     def add_noise(
         self,

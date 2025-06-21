@@ -50,14 +50,15 @@ stream = accelerate_with_tensorrt(
 # stream = accelerate_with_stable_fast(stream)
 
 ###################################################################
-
-prompt = "Self-portrait oil painting, boticelli, rembrandt, a beautiful cyborg male with golden hair, 8k"
+prompt = "cat, 8k, digital art"
+#prompt = "anime dress, 8k, oil painting"
 # Prepare the stream
 stream.prepare(prompt=prompt,
                negative_prompt="anime, handdrawn, pencil, manga",
             num_inference_steps=50,
             guidance_scale=1.1)
 
+stream.update_prompts(weighted_prompts=[("cat, 8k, digital art", 0.5), ("cat, pixel art, picasso, cubism, strandinsky, monochrome", 0.5)])
 # Prepare image
 init_image = load_image("/tmp/a.png").resize((512, 512))
 
