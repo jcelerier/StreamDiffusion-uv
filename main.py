@@ -60,7 +60,7 @@ stream.prepare(prompt=prompt,
 
 stream.update_prompts(weighted_prompts=[("cat, 8k, digital art", 0.5), ("cat, pixel art, picasso, cubism, strandinsky, monochrome", 0.5)])
 # Prepare image
-init_image = load_image("/tmp/a.png").resize((512, 512))
+init_image = load_image("http://picsum.photos/512").resize((512, 512))
 
 # Warmup >= len(t_index_list) x frame_buffer_size
 for _ in range(2):
