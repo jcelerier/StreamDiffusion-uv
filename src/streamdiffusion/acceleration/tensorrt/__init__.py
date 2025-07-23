@@ -96,7 +96,11 @@ def accelerate_with_tensorrt(
     unet = stream.unet
     vae = stream.vae
 
-    del stream.unet, stream.vae, stream.pipe.unet, stream.pipe.vae
+    del stream.unet, stream.vae
+    if hasattr(stream.pipe, 'unet'):
+        del stream.pipe.unet
+    if hasattr(stream.pipe, 'vae'):
+        del stream.pipe.vae
 
     vae_config = vae.config
     vae_dtype = vae.dtype

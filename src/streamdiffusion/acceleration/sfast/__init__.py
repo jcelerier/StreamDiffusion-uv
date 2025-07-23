@@ -27,7 +27,10 @@ def accelerate_with_stable_fast(
         # CUDA Graph is suggested for small batch sizes and small resolutions to reduce CPU overhead.
         config.enable_cuda_graph = True
     stream.pipe = compile(stream.pipe, config)
-    stream.unet = stream.pipe.unet
-    stream.vae = stream.pipe.vae
-    stream.text_encoder = stream.pipe.text_encoder
+    if hasattr(stream.pipe, 'unet'):
+        stream.unet = stream.pipe.unet
+    if hasattr(stream.pipe, 'vae'):
+        stream.vae = stream.pipe.vae
+    if hasattr(stream.pipe, 'text_encoder'):
+        stream.text_encoder = stream.pipe.text_encoder
     return stream

@@ -273,13 +273,17 @@ class StreamDiffusion:
 
     @torch.no_grad()
     def update_prompt(self, prompt: str) -> None:
+        do_classifier_free_guidance = self.guidance_scale > 1.0
         encoder_output = self.pipe.encode_prompt(
             prompt=prompt,
             device=self.device,
             num_images_per_prompt=1,
-            do_classifier_free_guidance=False,
+            do_classifier_free_guidance=do_classifier_free_guidance,
         )
         self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
+        
+        if self.sdxl:
+            self.add_text_embeds = encoder_output[2]
 
         if self.use_denoising_batch and self.cfg_type == "full":
             uncond_prompt_embeds = encoder_output[1].repeat(self.batch_size, 1, 1)
@@ -547,6 +551,10 @@ class StreamDiffusion:
     def predict_x0_batch(self, x_t_latent: torch.Tensor) -> torch.Tensor:
         added_cond_kwargs = {}
         prev_latent_batch = self.x_t_latent_buffer
+        
+        # Add SDXL conditioning if needed
+        if self.sdxl:
+            added_cond_kwargs = {"text_embeds": self.add_text_embeds.to(self.device), "time_ids": self.add_time_ids.to(self.device)}
 
         if self.use_denoising_batch:
             t_list = self.sub_timesteps_tensor
@@ -555,12 +563,9 @@ class StreamDiffusion:
                 self.stock_noise = torch.cat(
                     (self.init_noise[0:1], self.stock_noise[:-1]), dim=0
                 )
-                if self.sdxl:
-                    added_cond_kwargs = {"text_embeds": self.add_text_embeds.to(self.device), "time_ids": self.add_time_ids.to(self.device)}
-
                 x_t_latent = x_t_latent.to(self.device)
                 t_list = t_list.to(self.device)
-                x_0_pred_batch, model_pred = self.unet_step(x_t_latent, t_list, added_cond_kwargs=added_cond_kwargs)
+            x_0_pred_batch, model_pred = self.unet_step(x_t_latent, t_list, added_cond_kwargs=added_cond_kwargs)
 
 
             if self.denoising_steps_num > 1:
@@ -585,7 +590,6 @@ class StreamDiffusion:
                 ).repeat(
                     self.frame_bff_size,
                 )
-                x_0_pred, model_pred = self.unet_step(x_t_latent, t, idx)
                 if self.sdxl:
                     added_cond_kwargs = {"text_embeds": self.add_text_embeds.to(self.device), "time_ids": self.add_time_ids.to(self.device)}
                 x_0_pred, model_pred = self.unet_step(x_t_latent, t, idx=idx, added_cond_kwargs=added_cond_kwargs)
@@ -653,10 +657,20 @@ class StreamDiffusion:
             device=self.device,
             dtype=self.dtype,
         )
+        
+        # Prepare additional conditioning for SDXL models
+        added_cond_kwargs = {}
+        if self.sdxl:
+            added_cond_kwargs = {
+                "text_embeds": self.add_text_embeds.to(self.device), 
+                "time_ids": self.add_time_ids.to(self.device)
+            }
+        
         model_pred = self.unet(
             x_t_latent,
             self.sub_timesteps_tensor,
             encoder_hidden_states=self.prompt_embeds,
+            added_cond_kwargs=added_cond_kwargs,
             return_dict=False,
         )[0]
         x_0_pred_out = (
