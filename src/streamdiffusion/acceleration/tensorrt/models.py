@@ -17,6 +17,7 @@
 # limitations under the License.
 #
 
+import onnx
 import onnx_graphsurgeon as gs
 import torch
 from onnx import shape_inference
@@ -53,10 +54,40 @@ class Optimizer:
 
     def infer_shapes(self, return_onnx=False):
         onnx_graph = gs.export_onnx(self.graph)
-        if onnx_graph.ByteSize() > 2147483648:
-            raise TypeError("ERROR: model size exceeds supported 2GB limit")
+        if onnx_graph.ByteSize() > 8589934592:  # 8GB limit
+            raise TypeError("ERROR: model size exceeds supported 8GB limit")
         else:
-            onnx_graph = shape_inference.infer_shapes(onnx_graph)
+            # Try to use ONNX Runtime's symbolic shape inference for large models
+            try:
+                import onnxruntime as ort
+                from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
+                
+                # Save to temp file for ORT processing
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.onnx', delete=False) as tmp:
+                    tmp_path = tmp.name
+                    onnx.save(onnx_graph, tmp_path)
+                
+                # Use symbolic shape inference
+                out_path = tmp_path.replace('.onnx', '_inferred.onnx')
+                SymbolicShapeInference.infer_shapes(
+                    onnx.ModelProto(),  # Pass model proto
+                    tmp_path,
+                    out_path,
+                    auto_merge=True,
+                    guess_output_rank=True
+                )
+                onnx_graph = onnx.load(out_path)
+                # Clean up inferred model file
+                os.unlink(out_path)
+                
+                # Clean up temp file
+                import os
+                os.unlink(tmp_path)
+                
+            except Exception as e:
+                print(f"Warning: Failed to use ORT symbolic shape inference, falling back to standard: {e}")
+                onnx_graph = shape_inference.infer_shapes(onnx_graph)
 
         self.graph = gs.import_onnx(onnx_graph)
         if return_onnx:

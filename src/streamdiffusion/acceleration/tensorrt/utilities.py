@@ -378,11 +378,22 @@ def build_engine(
 ):
     _, free_mem, _ = cudart.cudaMemGetInfo()
     GiB = 2**30
-    if free_mem > 6 * GiB:
+    
+    # For SDXL models, we need larger workspace
+    min_workspace_size = 8 * GiB  # 8GB minimum for SDXL
+    
+    if free_mem > 12 * GiB:
+        # If we have plenty of memory, reserve 4GB for activations
         activation_carveout = 4 * GiB
         max_workspace_size = free_mem - activation_carveout
+    elif free_mem > min_workspace_size:
+        # If we have at least 8GB free, use it all for workspace
+        max_workspace_size = min_workspace_size
     else:
-        max_workspace_size = 0
+        # Not enough memory for SDXL
+        max_workspace_size = free_mem // 2  # Use half of available memory
+    
+    print(f"TensorRT workspace size: {max_workspace_size / GiB:.2f} GB (Free memory: {free_mem / GiB:.2f} GB)")
     engine = Engine(engine_path)
     input_profile = model_data.get_input_profile(
         opt_batch_size,
