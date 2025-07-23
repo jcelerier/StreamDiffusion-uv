@@ -561,14 +561,31 @@ class StreamDiffusionWrapper:
 
                 if not os.path.exists(unet_path):
                     os.makedirs(os.path.dirname(unet_path), exist_ok=True)
-                    unet_model = UNet(
-                        fp16=True,
-                        device=stream.device,
-                        max_batch_size=stream.trt_unet_batch_size,
-                        min_batch_size=stream.trt_unet_batch_size,
-                        embedding_dim=stream.text_encoder.config.hidden_size,
-                        unet_dim=stream.unet.config.in_channels,
-                    )
+                    
+                    # Check if this is an SDXL model
+                    if self.sdxl:
+                        # Import UNetXL for SDXL models
+                        from streamdiffusion.acceleration.tensorrt import UNetXL
+                        unet_model = UNetXL(
+                            fp16=True,
+                            device=stream.device,
+                            max_batch_size=stream.trt_unet_batch_size,
+                            min_batch_size=stream.trt_unet_batch_size,
+                            embedding_dim=stream.text_encoder.config.hidden_size,
+                            unet_dim=stream.unet.config.in_channels,
+                            text_maxlen=77,
+                            time_dim=6,
+                        )
+                    else:
+                        unet_model = UNet(
+                            fp16=True,
+                            device=stream.device,
+                            max_batch_size=stream.trt_unet_batch_size,
+                            min_batch_size=stream.trt_unet_batch_size,
+                            embedding_dim=stream.text_encoder.config.hidden_size,
+                            unet_dim=stream.unet.config.in_channels,
+                        )
+                    
                     compile_unet(
                         stream.unet,
                         unet_model,
@@ -576,6 +593,7 @@ class StreamDiffusionWrapper:
                         unet_path + ".opt.onnx",
                         unet_path,
                         opt_batch_size=stream.trt_unet_batch_size,
+                        is_sdxl=self.sdxl,
                     )
 
                 if not os.path.exists(vae_decoder_path):

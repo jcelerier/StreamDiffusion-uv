@@ -23,27 +23,53 @@ class UNet2DConditionModelEngine:
         latent_model_input: torch.Tensor,
         timestep: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
+        added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
         **kwargs,
     ) -> Any:
         if timestep.dtype != torch.float32:
             timestep = timestep.float()
 
-        self.engine.allocate_buffers(
-            shape_dict={
+        # Check if this is an SDXL model by looking for additional conditioning
+        if added_cond_kwargs and "text_embeds" in added_cond_kwargs and "time_ids" in added_cond_kwargs:
+            # SDXL model
+            shape_dict = {
+                "sample": latent_model_input.shape,
+                "timestep": timestep.shape,
+                "encoder_hidden_states": encoder_hidden_states.shape,
+                "text_embeds": added_cond_kwargs["text_embeds"].shape,
+                "time_ids": added_cond_kwargs["time_ids"].shape,
+                "latent": latent_model_input.shape,
+            }
+            
+            infer_dict = {
+                "sample": latent_model_input,
+                "timestep": timestep,
+                "encoder_hidden_states": encoder_hidden_states,
+                "text_embeds": added_cond_kwargs["text_embeds"],
+                "time_ids": added_cond_kwargs["time_ids"],
+            }
+        else:
+            # Regular SD model
+            shape_dict = {
                 "sample": latent_model_input.shape,
                 "timestep": timestep.shape,
                 "encoder_hidden_states": encoder_hidden_states.shape,
                 "latent": latent_model_input.shape,
-            },
+            }
+            
+            infer_dict = {
+                "sample": latent_model_input,
+                "timestep": timestep,
+                "encoder_hidden_states": encoder_hidden_states,
+            }
+
+        self.engine.allocate_buffers(
+            shape_dict=shape_dict,
             device=latent_model_input.device,
         )
 
         noise_pred = self.engine.infer(
-            {
-                "sample": latent_model_input,
-                "timestep": timestep,
-                "encoder_hidden_states": encoder_hidden_states,
-            },
+            infer_dict,
             self.stream,
             use_cuda_graph=self.use_cuda_graph,
         )["latent"]

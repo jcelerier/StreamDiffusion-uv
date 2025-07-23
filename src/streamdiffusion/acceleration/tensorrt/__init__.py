@@ -11,7 +11,8 @@ from polygraphy import cuda
 from ...pipeline import StreamDiffusion
 from .builder import EngineBuilder, create_onnx_path
 from .engine import AutoencoderKLEngine, UNet2DConditionModelEngine
-from .models import VAE, BaseModel, UNet, VAEEncoder
+from .models import VAE, BaseModel, UNet, UNetXL, VAEEncoder
+from .sdxl_unet_wrapper import SDXLUNetWrapper
 
 
 class TorchVAEEncoder(torch.nn.Module):
@@ -70,8 +71,14 @@ def compile_unet(
     engine_path: str,
     opt_batch_size: int = 1,
     engine_build_options: dict = {},
+    is_sdxl: bool = False,
 ):
     unet = unet.to(torch.device("cuda"), dtype=torch.float16)
+    
+    # Wrap SDXL UNet to handle additional inputs
+    if is_sdxl:
+        unet = SDXLUNetWrapper(unet)
+    
     builder = EngineBuilder(model_data, unet, device=torch.device("cuda"))
     builder.build(
         onnx_path,
@@ -118,14 +125,33 @@ def accelerate_with_tensorrt(
     vae_encoder_engine_path = f"{engine_dir}/vae_encoder.engine"
     vae_decoder_engine_path = f"{engine_dir}/vae_decoder.engine"
 
-    unet_model = UNet(
-        fp16=True,
-        device=stream.device,
-        max_batch_size=max_batch_size,
-        min_batch_size=min_batch_size,
-        embedding_dim=text_encoder.config.hidden_size,
-        unet_dim=unet.config.in_channels,
-    )
+    # Check if this is an SDXL model
+    is_sdxl = hasattr(stream, 'sdxl') and stream.sdxl
+    
+    if is_sdxl:
+        # Get text encoder 2 for SDXL
+        text_encoder_2 = stream.pipe.text_encoder_2 if hasattr(stream.pipe, 'text_encoder_2') else None
+        embedding_dim = text_encoder_2.config.hidden_size if text_encoder_2 else 1280
+        
+        unet_model = UNetXL(
+            fp16=True,
+            device=stream.device,
+            max_batch_size=max_batch_size,
+            min_batch_size=min_batch_size,
+            embedding_dim=text_encoder.config.hidden_size,
+            unet_dim=unet.config.in_channels,
+            text_maxlen=77,
+            time_dim=6,
+        )
+    else:
+        unet_model = UNet(
+            fp16=True,
+            device=stream.device,
+            max_batch_size=max_batch_size,
+            min_batch_size=min_batch_size,
+            embedding_dim=text_encoder.config.hidden_size,
+            unet_dim=unet.config.in_channels,
+        )
     vae_decoder_model = VAE(
         device=stream.device,
         max_batch_size=max_batch_size,
@@ -144,6 +170,7 @@ def accelerate_with_tensorrt(
             create_onnx_path("unet", onnx_dir, opt=False),
             create_onnx_path("unet", onnx_dir, opt=True),
             unet_engine_path,
+            is_sdxl=is_sdxl,
             **engine_build_options,
         )
     else:
