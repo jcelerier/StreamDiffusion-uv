@@ -129,16 +129,15 @@ def accelerate_with_tensorrt(
     is_sdxl = hasattr(stream, 'sdxl') and stream.sdxl
     
     if is_sdxl:
-        # Get text encoder 2 for SDXL
-        text_encoder_2 = stream.pipe.text_encoder_2 if hasattr(stream.pipe, 'text_encoder_2') else None
-        embedding_dim = text_encoder_2.config.hidden_size if text_encoder_2 else 1280
+        # SDXL uses cross_attention_dim which is the combined encoder dimension (2048)
+        cross_attention_dim = unet.config.cross_attention_dim
         
         unet_model = UNetXL(
             fp16=True,
             device=stream.device,
             max_batch_size=max_batch_size,
             min_batch_size=min_batch_size,
-            embedding_dim=text_encoder.config.hidden_size,
+            embedding_dim=cross_attention_dim,  # Use the UNet's expected dimension
             unet_dim=unet.config.in_channels,
             text_maxlen=77,
             time_dim=6,
